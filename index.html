@@ -447,7 +447,7 @@
       let score = 0;
       if (target && !isTruce(move.row, move.col)) {
         const result = compareBattle(piece, target);
-        score += result === "attacker" ? 80 : -80;
+        score += result === "attacker" ? 80 + target.number * 4 : -90 - piece.number * 4;
       }
       if (piece.color === "white" && move.col === 1) {
         if (state.missions.col1[move.row] === piece.number) {
@@ -467,16 +467,23 @@
       }
 
       const hypothetical = { ...piece, row: move.row, col: move.col };
-      const blackThreats = state.pieces
+      const blackThreatPenalty = state.pieces
         .filter((p) => p.alive && p.color === "black")
-        .flatMap((p) =>
-          getLegalMoves(p)
-            .filter((m) => m.row === hypothetical.row && m.col === hypothetical.col)
-            .map(() => p)
-        );
-      if (blackThreats.length > 0 && !isTruce(move.row, move.col)) {
-        score -= 50;
+        .reduce((worst, attacker) => {
+          const canAttack = getLegalMoves(attacker).some(
+            (m) => m.row === hypothetical.row && m.col === hypothetical.col
+          );
+          if (!canAttack) return worst;
+          const outcome = compareBattle(attacker, hypothetical);
+          if (outcome === "attacker") {
+            return Math.min(worst, -120 - attacker.number * 3);
+          }
+          return Math.min(worst, -10);
+        }, 0);
+      if (!isTruce(move.row, move.col)) {
+        score += blackThreatPenalty;
       }
+      score += getLegalMoves(hypothetical).length * 2;
       return score;
     };
 
