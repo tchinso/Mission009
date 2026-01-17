@@ -284,16 +284,24 @@
 
     const isTruce = (row, col) => TRUCE_COL === col && TRUCE_ROWS.includes(row);
 
+    const shuffle = (array) => {
+      for (let i = array.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+      }
+      return array;
+    };
+
     const generateMissionsForColumn = () => {
       const missions = {};
-      const numbers = [...COLS];
-      for (let i = numbers.length - 1; i > 0; i -= 1) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [numbers[i], numbers[j]] = [numbers[j], numbers[i]];
+      const groups = [shuffle([1, 2, 3]), shuffle([4, 5, 6]), shuffle([7, 8, 9])];
+      for (let block = 0; block < 3; block += 1) {
+        const blockRows = ROWS.slice(block * 3, block * 3 + 3);
+        const blockNumbers = shuffle([groups[0][block], groups[1][block], groups[2][block]]);
+        blockRows.forEach((row, idx) => {
+          missions[row] = blockNumbers[idx];
+        });
       }
-      ROWS.forEach((row, idx) => {
-        missions[row] = numbers[idx];
-      });
       return missions;
     };
 
@@ -494,11 +502,11 @@
 
     const evaluateTerminal = (customState, currentPlayer) => {
       if (customState.gameOver && customState.winner) {
-        return { score: customState.winner === "white" ? 1 : -1, depth: 0 };
+        return { score: customState.winner === "white" ? 10000 : -10000, depth: 0 };
       }
       const moves = getAllMoves(customState, currentPlayer);
       if (moves.length === 0) {
-        return { score: currentPlayer === "white" ? -1 : 1, depth: 0 };
+        return { score: currentPlayer === "white" ? -10000 : 10000, depth: 0 };
       }
       return null;
     };
@@ -520,28 +528,237 @@
       return best;
     };
 
-    const minimax = (customState, currentPlayer, memo, path) => {
-      const key = serializeState(customState, currentPlayer);
-      if (memo.has(key)) return memo.get(key);
+    const buildTargetRowMap = (missions) => {
+      const map = {};
+      ROWS.forEach((row) => {
+        map[missions[row]] = row;
+      });
+      return map;
+    };
+
+    const evaluatePosition = (customState) => {
+      if (customState.gameOver && customState.winner) {
+        return customState.winner === "white" ? 10000 : -10000;
+      }
+      const targetRowWhite = buildTargetRowMap(customState.missions.col1);
+      const targetRowBlack = buildTargetRowMap(customState.missions.col9);
+      let score = 0;
+      const whiteMoves = getAllMoves(customState, "white").length;
+      const blackMoves = getAllMoves(customState, "black").length;
+      score += (whiteMoves - blackMoves) * 2;
+      score += (customState.missionProgress.white.length - customState.missionProgress.black.length) * 250;
+      customState.pieces.forEach((piece) => {
+        if (!piece.alive) return;
+        const rowIndex = ROWS.indexOf(piece.row);
+        if (piece.color === "white") {
+          score += 25;
+          score += piece.number * 1.5;
+          const targetRow = targetRowWhite[piece.number];
+          const dist =
+            Math.abs(rowIndex - ROWS.indexOf(targetRow)) + Math.abs(piece.col - 1);
+          score += Math.max(0, 28 - dist * 4);
+          if (piece.col === 1 && customState.missions.col1[piece.row] === piece.number) {
+            score += 400;
+          }
+        } else {
+          score -= 25;
+          score -= piece.number * 1.5;
+          const targetRow = targetRowBlack[piece.number];
+          const dist =
+            Math.abs(rowIndex - ROWS.indexOf(targetRow)) + Math.abs(piece.col - 9);
+          score -= Math.max(0, 28 - dist * 4);
+          if (piece.col === 9 && customState.missions.col9[piece.row] === piece.number) {
+            score -= 400;
+          }
+        }
+      });
+      return score;
+    };
+
+    const isCaptureMove = (customState, move, currentPlayer) => {
+      const target = getPieceAt(move.move.row, move.move.col, customState);
+      return target && target.color !== currentPlayer && !isTruce(move.move.row, move.move.col);
+    };
+
+    const moveKey = (move) => `${move.pieceId}-${move.move.row}${move.move.col}`;
+
+    const scoreMoveOrdering = (customState, move, currentPlayer, history, killers, depth) => {
+      const piece = customState.pieces.find((p) => p.id === move.pieceId);
+      if (!piece) return 0;
+      const target = getPieceAt(move.move.row, move.move.col, customState);
+      let score = 0;
+      if (target && target.color !== currentPlayer && !isTruce(move.move.row, move.move.col)) {
+        score += 1000 + target.number * 5;
+      }
+      const key = moveKey(move);
+      if (killers[depth] && killers[depth].includes(key)) {
+        score += 800;
+      }
+      if (history[key]) {
+        score += history[key];
+      }
+      if (currentPlayer === "white") {
+        if (move.move.col === 1 && customState.missions.col1[move.move.row] === piece.number) {
+          score += 900;
+        }
+        score += (piece.col - move.move.col) * 10;
+      } else {
+        if (move.move.col === 9 && customState.missions.col9[move.move.row] === piece.number) {
+          score += 900;
+        }
+        score += (move.move.col - piece.col) * 10;
+      }
+      return score;
+    };
+
+    const quiescence = (
+      customState,
+      currentPlayer,
+      alpha,
+      beta,
+      depth,
+      memo,
+      path,
+      deadline,
+      history,
+      killers
+    ) => {
+      if (performance.now() > deadline) {
+        return { score: evaluatePosition(customState), depth: 0 };
+      }
+      const standPat = evaluatePosition(customState);
+      if (currentPlayer === "white") {
+        if (standPat >= beta) return { score: beta, depth: 0 };
+        if (alpha < standPat) alpha = standPat;
+      } else {
+        if (standPat <= alpha) return { score: alpha, depth: 0 };
+        if (beta > standPat) beta = standPat;
+      }
+      if (depth === 0) return { score: standPat, depth: 0 };
+      const captureMoves = getAllMoves(customState, currentPlayer).filter((move) =>
+        isCaptureMove(customState, move, currentPlayer)
+      );
+      if (!captureMoves.length) return { score: standPat, depth: 0 };
+      const orderedCaptures = captureMoves.sort((a, b) =>
+        scoreMoveOrdering(customState, b, currentPlayer, history, killers, depth) -
+        scoreMoveOrdering(customState, a, currentPlayer, history, killers, depth)
+      );
+      const nextPlayer = currentPlayer === "white" ? "black" : "white";
+      let best =
+        currentPlayer === "white"
+          ? { score: -Infinity, depth: Infinity }
+          : { score: Infinity, depth: Infinity };
+      for (let i = 0; i < orderedCaptures.length; i += 1) {
+        if (performance.now() > deadline) break;
+        const move = orderedCaptures[i];
+        const { state: nextState } = applyMoveToState(customState, move.pieceId, move.move);
+        const result = quiescence(
+          nextState,
+          nextPlayer,
+          alpha,
+          beta,
+          depth - 1,
+          memo,
+          path,
+          deadline,
+          history,
+          killers
+        );
+        const candidate = { score: result.score, depth: result.depth + 1 };
+        best = chooseBetterResult(currentPlayer, best, candidate);
+        if (currentPlayer === "white") {
+          alpha = Math.max(alpha, candidate.score);
+        } else {
+          beta = Math.min(beta, candidate.score);
+        }
+        if (beta <= alpha) break;
+      }
+      return best;
+    };
+
+    const minimax = (
+      customState,
+      currentPlayer,
+      depth,
+      alpha,
+      beta,
+      memo,
+      path,
+      deadline,
+      history,
+      killers
+    ) => {
+      if (performance.now() > deadline) {
+        return { score: evaluatePosition(customState), depth: 0 };
+      }
+      const key = `${serializeState(customState, currentPlayer)}|${depth}`;
+      if (memo.has(key)) {
+        const cached = memo.get(key);
+        if (cached.depth >= depth) return cached;
+      }
       if (path.has(key)) return { score: 0, depth: 0 };
       const terminal = evaluateTerminal(customState, currentPlayer);
       if (terminal) {
         memo.set(key, terminal);
         return terminal;
       }
+      if (depth === 0) {
+        return quiescence(
+          customState,
+          currentPlayer,
+          alpha,
+          beta,
+          2,
+          memo,
+          path,
+          deadline,
+          history,
+          killers
+        );
+      }
       path.add(key);
-      const moves = getAllMoves(customState, currentPlayer);
+      const moves = getAllMoves(customState, currentPlayer).sort((a, b) =>
+        scoreMoveOrdering(customState, b, currentPlayer, history, killers, depth) -
+        scoreMoveOrdering(customState, a, currentPlayer, history, killers, depth)
+      );
       let best =
         currentPlayer === "white"
           ? { score: -Infinity, depth: Infinity }
           : { score: Infinity, depth: Infinity };
       const nextPlayer = currentPlayer === "white" ? "black" : "white";
-      moves.forEach((move) => {
+      for (let i = 0; i < moves.length; i += 1) {
+        const move = moves[i];
         const { state: nextState } = applyMoveToState(customState, move.pieceId, move.move);
-        const result = minimax(nextState, nextPlayer, memo, path);
+        const result = minimax(
+          nextState,
+          nextPlayer,
+          depth - 1,
+          alpha,
+          beta,
+          memo,
+          path,
+          deadline,
+          history,
+          killers
+        );
         const candidate = { score: result.score, depth: result.depth + 1 };
         best = chooseBetterResult(currentPlayer, best, candidate);
-      });
+        if (currentPlayer === "white") {
+          alpha = Math.max(alpha, candidate.score);
+        } else {
+          beta = Math.min(beta, candidate.score);
+        }
+        if (beta <= alpha) {
+          const keyMove = moveKey(move);
+          history[keyMove] = (history[keyMove] || 0) + depth * depth;
+          if (!killers[depth]) killers[depth] = [];
+          if (!killers[depth].includes(keyMove)) {
+            killers[depth] = [keyMove, killers[depth][0]].filter(Boolean).slice(0, 2);
+          }
+          break;
+        }
+        if (performance.now() > deadline) break;
+      }
       path.delete(key);
       memo.set(key, best);
       return best;
@@ -556,28 +773,54 @@
       }
       const memo = new Map();
       const path = new Set();
+      const startTime = performance.now();
+      const deadline = startTime + 6500;
       let bestResult = { score: -Infinity, depth: Infinity };
-      let bestMoves = [];
-      moves.forEach((move) => {
-        const { state: nextState } = applyMoveToState(state, move.pieceId, move.move);
-        const result = minimax(nextState, "black", memo, path);
-        const candidate = { score: result.score, depth: result.depth + 1 };
-        if (candidate.score > bestResult.score) {
-          bestResult = candidate;
-          bestMoves = [move];
-        } else if (candidate.score === bestResult.score) {
-          if (candidate.score === 1 && candidate.depth < bestResult.depth) {
-            bestResult = candidate;
-            bestMoves = [move];
-          } else if (candidate.score === -1 && candidate.depth > bestResult.depth) {
-            bestResult = candidate;
-            bestMoves = [move];
-          } else if (candidate.depth === bestResult.depth) {
-            bestMoves.push(move);
+      let bestMove = moves[0];
+      const history = {};
+      const killers = [];
+      const maxDepth = 5;
+      for (let depth = 1; depth <= maxDepth; depth += 1) {
+        if (performance.now() > deadline) break;
+        let depthBest = { score: -Infinity, depth: Infinity };
+        let depthMove = bestMove;
+        const orderedMoves = moves
+          .slice()
+          .sort(
+            (a, b) =>
+              scoreMoveOrdering(state, b, "white", history, killers, depth) -
+              scoreMoveOrdering(state, a, "white", history, killers, depth)
+          );
+        for (let i = 0; i < orderedMoves.length; i += 1) {
+          if (performance.now() > deadline) break;
+          const move = orderedMoves[i];
+          const { state: nextState } = applyMoveToState(state, move.pieceId, move.move);
+          const result = minimax(
+            nextState,
+            "black",
+            depth - 1,
+            -Infinity,
+            Infinity,
+            memo,
+            path,
+            deadline,
+            history,
+            killers
+          );
+          const candidate = { score: result.score, depth: result.depth + 1 };
+          if (candidate.score > depthBest.score) {
+            depthBest = candidate;
+            depthMove = move;
+          } else if (candidate.score === depthBest.score && candidate.depth < depthBest.depth) {
+            depthBest = candidate;
+            depthMove = move;
           }
         }
-      });
-      const chosenMove = bestMoves[0];
+        if (performance.now() > deadline) break;
+        bestResult = depthBest;
+        bestMove = depthMove;
+      }
+      const chosenMove = bestMove;
       const chosenPiece = state.pieces.find((piece) => piece.id === chosenMove.pieceId);
       if (!chosenPiece) {
         endGame("black", "흰색이 움직일 말을 찾지 못했습니다.");
