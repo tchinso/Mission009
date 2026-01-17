@@ -240,7 +240,7 @@
         <div>• 전투는 숫자 비교: 큰 숫자 승, 단 차이가 1이면 작은 숫자 승.</div>
         <div>• 1 vs 9은 1 승리, 2·3 vs 8은 작은 쪽 승리.</div>
         <div>• 같은 숫자는 이동한 쪽 승리.</div>
-        <div>• 자신의 숫자와 일치하는 상대편 임무번호 칸 도달 시 즉시 승리.</div>
+        <div>• 자신의 숫자와 일치하는 상대편 임무번호 칸 3곳 이상 도달 시 승리.</div>
       </div>
       <h3>전투 로그</h3>
       <div id="log" class="log"></div>
@@ -267,6 +267,7 @@
     const createEmptyState = () => ({
       pieces: [],
       missions: { col1: {}, col9: {} },
+      missionProgress: { black: [], white: [] },
       selected: null,
       currentPlayer: "black",
       gameOver: false,
@@ -395,10 +396,18 @@
     const checkWin = (piece) => {
       if (!piece || !piece.alive) return false;
       if (piece.color === "black" && piece.col === 9) {
-        return state.missions.col9[piece.row] === piece.number;
+        if (state.missions.col9[piece.row] !== piece.number) return false;
+        if (!state.missionProgress.black.includes(piece.row)) {
+          state.missionProgress.black.push(piece.row);
+        }
+        return state.missionProgress.black.length >= 3;
       }
       if (piece.color === "white" && piece.col === 1) {
-        return state.missions.col1[piece.row] === piece.number;
+        if (state.missions.col1[piece.row] !== piece.number) return false;
+        if (!state.missionProgress.white.includes(piece.row)) {
+          state.missionProgress.white.push(piece.row);
+        }
+        return state.missionProgress.white.length >= 3;
       }
       return false;
     };
@@ -429,7 +438,7 @@
       piece.row = destination.row;
       piece.col = destination.col;
       if (checkWin(piece)) {
-        endGame(piece.color, "임무번호 칸을 점령했습니다!");
+        endGame(piece.color, "임무번호 칸 3곳을 점령했습니다!");
       }
     };
 
@@ -441,7 +450,12 @@
         score += result === "attacker" ? 80 : -80;
       }
       if (piece.color === "white" && move.col === 1) {
-        if (state.missions.col1[move.row] === piece.number) score += 1000;
+        if (state.missions.col1[move.row] === piece.number) {
+          const projected = state.missionProgress.white.includes(move.row)
+            ? state.missionProgress.white.length
+            : state.missionProgress.white.length + 1;
+          score += projected >= 3 ? 1000 : 200;
+        }
       }
       const targetRow = Object.keys(state.missions.col1).find(
         (row) => state.missions.col1[row] === piece.number
